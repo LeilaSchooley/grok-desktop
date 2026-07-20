@@ -1,0 +1,96 @@
+{
+  "name": "grok-desktop",
+  "productName": "Grok",
+  "version": "1.0.0",
+  "description": "Unofficial Grok desktop app with multi-tab support for Linux and Windows",
+  "main": "src/main.js",
+  "author": "Grok Desktop",
+  "license": "MIT",
+  "homepage": "https://github.com/LeilaSchooley/grok-desktop",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LeilaSchooley/grok-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LeilaSchooley/grok-desktop/issues"
+  },
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --linux deb AppImage --win nsis portable",
+    "dist:linux": "electron-builder --linux deb AppImage",
+    "dist:deb": "electron-builder --linux deb",
+    "dist:win": "electron-builder --win nsis portable"
+  },
+  "build": {
+    "appId": "com.grok.desktop",
+    "productName": "Grok",
+    "copyright": "Copyright © 2026 Grok Desktop",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Network",
+      "icon": "assets/icons",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+      "desktop": {
+        "Name": "Grok",
+        "Comment": "Grok AI desktop app",
+        "Categories": "Network;Chat;",
+        "StartupWMClass": "Grok"
+      },
+      "synopsis": "Unofficial Grok desktop client"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/icon.png",
+      "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Grok"
+    }
+  },
+  "devDependencies": {
+    "electron": "^36.4.0",
+    "electron-builder": "^26.0.12"
+  }
+}

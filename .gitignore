@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+*.AppImage
+*.deb
+*.exe
+*.blockmap
+.env
+.env.*
+!.env.example
