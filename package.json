@@ -44,10 +44,12 @@
       "icon": "assets/icons",
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
       "desktop": {
-        "Name": "Grok",
-        "Comment": "Grok AI desktop app",
-        "Categories": "Network;Chat;",
-        "StartupWMClass": "Grok"
+        "entry": {
+          "Name": "Grok",
+          "Comment": "Grok AI desktop app",
+          "Categories": "Network;Chat;",
+          "StartupWMClass": "Grok"
+        }
       },
       "synopsis": "Unofficial Grok desktop client"
     },
