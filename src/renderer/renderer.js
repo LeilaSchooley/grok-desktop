@@ -11,6 +11,7 @@
   const hwAccelInput = document.getElementById('setting-hw-accel');
   const restartBtn = document.getElementById('restart-btn');
   const toastEl = document.getElementById('toast');
+  const loadingOverlay = document.getElementById('loading-overlay');
 
   /** @type {{ id: number, title: string, url: string, webview: Electron.WebviewTag, button: HTMLButtonElement }[]} */
   const tabs = [];
@@ -25,6 +26,11 @@
     hardwareAcceleration: true,
     closeToTray: true,
   };
+
+  function setLoading(visible) {
+    if (!loadingOverlay) return;
+    loadingOverlay.hidden = !visible;
+  }
 
   function showToast(message) {
     toastEl.textContent = message;
@@ -133,6 +139,18 @@
       tab.url = event.url;
     });
 
+    webview.addEventListener('did-stop-loading', () => {
+      if (tab.id === activeId) setLoading(false);
+    });
+
+    webview.addEventListener('did-fail-load', () => {
+      if (tab.id === activeId) setLoading(false);
+    });
+
+    webview.addEventListener('did-start-loading', () => {
+      if (tab.id === activeId) setLoading(true);
+    });
+
     webview.addEventListener('new-window', (event) => {
       event.preventDefault();
       handleOpenUrl(event.url);
@@ -193,7 +211,10 @@
     viewsEl.appendChild(webview);
     attachWebviewEvents(tab);
 
-    if (activate) setActive(id);
+    if (activate) {
+      setActive(id);
+      setLoading(true);
+    }
     button.scrollIntoView({ inline: 'nearest', block: 'nearest' });
     return tab;
   }

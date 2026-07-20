@@ -28,4 +28,4 @@ function writeSettings(partial) {
   return next;
 }
 
-module.exports = { DEFAULTS, readSettings, writeSettings };
+module.exports = { DEFAULTS, readSettings, writeSettings, settingsPath };
