@@ -4,9 +4,13 @@
   "version": "1.0.0",
   "description": "Unofficial Grok desktop app with multi-tab support for Linux and Windows",
   "main": "src/main.js",
-  "author": "Grok Desktop",
+  "author": {
+    "name": "Leila Schooley",
+    "email": "leila@users.noreply.github.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/LeilaSchooley/grok-desktop",
+  "desktopName": "grok-desktop",
   "repository": {
     "type": "git",
     "url": "https://github.com/LeilaSchooley/grok-desktop.git"
@@ -42,7 +46,9 @@
       ],
       "category": "Network",
       "icon": "assets/icons",
+      "syncDesktopName": true,
       "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+      "maintainer": "Leila Schooley <leila@users.noreply.github.com>",
       "desktop": {
         "entry": {
           "Name": "Grok",
