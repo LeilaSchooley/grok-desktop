@@ -21,10 +21,10 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --linux deb AppImage --win nsis portable",
-    "dist:linux": "electron-builder --linux deb AppImage",
-    "dist:deb": "electron-builder --linux deb",
-    "dist:win": "electron-builder --win nsis portable"
+    "dist": "electron-builder --linux deb AppImage --win nsis portable --publish never",
+    "dist:linux": "electron-builder --linux deb AppImage --publish never",
+    "dist:deb": "electron-builder --linux deb --publish never",
+    "dist:win": "electron-builder --win nsis portable --publish never"
   },
   "build": {
     "appId": "com.grok.desktop",
@@ -94,7 +94,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Grok"
+      "shortcutName": "Grok",
+      "artifactName": "${productName}-${version}-setup-${os}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-${os}-${arch}.${ext}"
     }
   },
   "devDependencies": {
