@@ -21,7 +21,7 @@ let tray = null;
 let isQuitting = false;
 let settings = readSettings();
 
-// Must run before app is ready
+// Only disable GPU when the user explicitly turns HW accel off in settings
 if (!settings.hardwareAcceleration) {
   app.disableHardwareAcceleration();
 }
@@ -218,7 +218,6 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  // Reached when the window actually closes (close-to-tray is off, or Quit was chosen).
   if (process.platform !== 'darwin') {
     isQuitting = true;
     app.quit();

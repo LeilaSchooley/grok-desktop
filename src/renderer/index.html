@@ -55,12 +55,17 @@
             <span>Hardware acceleration</span>
             <input type="checkbox" id="setting-hw-accel" />
           </label>
-          <p class="settings-hint">HW accel changes need a restart. Disable it if the app freezes on launch.</p>
+          <p class="settings-hint">Only turn this off if the window freezes. Changes need a restart.</p>
           <button type="button" class="settings-restart" id="restart-btn" hidden>Restart now</button>
         </div>
       </div>
     </header>
-    <main class="views" id="views"></main>
+    <main class="views" id="views">
+      <div class="loading-overlay" id="loading-overlay" aria-live="polite">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <p>Loading Grok…</p>
+      </div>
+    </main>
     <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
     <script src="renderer.js"></script>
   </body>
