@@ -67,6 +67,15 @@
       </div>
     </main>
     <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
+    <div class="tab-context-menu" id="tab-context-menu" hidden role="menu">
+      <button type="button" role="menuitem" data-action="pin">Pin tab</button>
+      <div class="menu-sep"></div>
+      <button type="button" role="menuitem" data-action="close">Close</button>
+      <button type="button" role="menuitem" data-action="close-others">Close other tabs</button>
+      <button type="button" role="menuitem" data-action="close-left">Close tabs to the left</button>
+      <button type="button" role="menuitem" data-action="close-right">Close tabs to the right</button>
+      <button type="button" role="menuitem" data-action="close-all">Close all tabs</button>
+    </div>
     <script src="renderer.js"></script>
   </body>
 </html>

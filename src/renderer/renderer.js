@@ -12,14 +12,16 @@
   const restartBtn = document.getElementById('restart-btn');
   const toastEl = document.getElementById('toast');
   const loadingOverlay = document.getElementById('loading-overlay');
+  const tabContextMenu = document.getElementById('tab-context-menu');
 
-  /** @type {{ id: number, title: string, url: string, webview: Electron.WebviewTag, button: HTMLButtonElement }[]} */
+  /** @type {{ id: number, title: string, url: string, pinned: boolean, webview: Electron.WebviewTag, button: HTMLButtonElement }[]} */
   const tabs = [];
   let activeId = null;
   let nextId = 1;
   let grokUrl = 'https://grok.com';
   let partition = 'persist:grok';
   let toastTimer = null;
+  let contextTabId = null;
 
   const uiState = {
     alwaysOnTop: false,
@@ -65,9 +67,71 @@
     settingsBtn.classList.toggle('active', open);
   }
 
+  function hideTabContextMenu() {
+    tabContextMenu.hidden = true;
+    contextTabId = null;
+  }
+
+  function showTabContextMenu(tabId, clientX, clientY) {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+
+    contextTabId = tabId;
+    const index = tabs.findIndex((t) => t.id === tabId);
+    const hasLeftUnpinned = tabs.slice(0, index).some((t) => !t.pinned);
+    const hasRight = tabs.slice(index + 1).some((t) => !t.pinned);
+    const hasOthers = tabs.some((t) => t.id !== tabId && !t.pinned);
+    const hasUnpinned = tabs.some((t) => !t.pinned);
+
+    tabContextMenu.querySelector('[data-action="pin"]').textContent = tab.pinned
+      ? 'Unpin tab'
+      : 'Pin tab';
+    tabContextMenu.querySelector('[data-action="close-others"]').disabled = !hasOthers;
+    tabContextMenu.querySelector('[data-action="close-left"]').disabled = !hasLeftUnpinned;
+    tabContextMenu.querySelector('[data-action="close-right"]').disabled = !hasRight;
+    tabContextMenu.querySelector('[data-action="close-all"]').disabled = !hasUnpinned;
+
+    tabContextMenu.hidden = false;
+    const menuWidth = tabContextMenu.offsetWidth;
+    const menuHeight = tabContextMenu.offsetHeight;
+    const x = Math.min(clientX, window.innerWidth - menuWidth - 8);
+    const y = Math.min(clientY, window.innerHeight - menuHeight - 8);
+    tabContextMenu.style.left = `${Math.max(8, x)}px`;
+    tabContextMenu.style.top = `${Math.max(8, y)}px`;
+  }
+
   function truncateTitle(title) {
     const clean = (title || 'Grok').replace(/\s+/g, ' ').trim();
     return clean.length > 40 ? `${clean.slice(0, 37)}…` : clean;
+  }
+
+  function pinnedLabel(title) {
+    const clean = (title || 'G').replace(/\s+/g, ' ').trim();
+    const letter = clean.charAt(0).toUpperCase() || 'G';
+    return letter;
+  }
+
+  function updateTabButton(tab) {
+    const titleEl = tab.button.querySelector('.tab-title');
+    tab.button.classList.toggle('pinned', tab.pinned);
+    tab.button.title = tab.title || 'Grok';
+    if (tab.pinned) {
+      titleEl.textContent = pinnedLabel(tab.title);
+      titleEl.classList.add('pinned-label');
+    } else {
+      titleEl.textContent = tab.title || 'Grok';
+      titleEl.classList.remove('pinned-label');
+    }
+  }
+
+  function reorderPinnedTabs() {
+    const pinned = tabs.filter((t) => t.pinned);
+    const unpinned = tabs.filter((t) => !t.pinned);
+    tabs.length = 0;
+    tabs.push(...pinned, ...unpinned);
+    for (const tab of tabs) {
+      tabsEl.appendChild(tab.button);
+    }
   }
 
   function getActiveTab() {
@@ -86,11 +150,17 @@
     if (active) document.title = active.title || 'Grok';
   }
 
-  function closeTab(id) {
+  function closeTab(id, { force = false } = {}) {
     const index = tabs.findIndex((t) => t.id === id);
     if (index === -1) return;
 
-    const [tab] = tabs.splice(index, 1);
+    const tab = tabs[index];
+    if (tab.pinned && !force) {
+      // Pinned tabs require unpin first (or force from explicit close in menu)
+      return;
+    }
+
+    tabs.splice(index, 1);
     tab.button.remove();
     tab.webview.remove();
 
@@ -103,6 +173,39 @@
       const next = tabs[Math.min(index, tabs.length - 1)];
       setActive(next.id);
     }
+  }
+
+  function togglePinTab(id) {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.pinned = !tab.pinned;
+    updateTabButton(tab);
+    reorderPinnedTabs();
+  }
+
+  function closeOtherTabs(id) {
+    const toClose = tabs.filter((t) => t.id !== id && !t.pinned).map((t) => t.id);
+    for (const closeId of toClose) closeTab(closeId, { force: true });
+  }
+
+  function closeTabsToLeft(id) {
+    const index = tabs.findIndex((t) => t.id === id);
+    if (index <= 0) return;
+    const toClose = tabs.slice(0, index).filter((t) => !t.pinned).map((t) => t.id);
+    for (const closeId of toClose) closeTab(closeId, { force: true });
+  }
+
+  function closeTabsToRight(id) {
+    const index = tabs.findIndex((t) => t.id === id);
+    if (index === -1 || index >= tabs.length - 1) return;
+    const toClose = tabs.slice(index + 1).filter((t) => !t.pinned).map((t) => t.id);
+    for (const closeId of toClose) closeTab(closeId, { force: true });
+  }
+
+  function closeAllTabs() {
+    const toClose = tabs.filter((t) => !t.pinned).map((t) => t.id);
+    for (const closeId of toClose) closeTab(closeId, { force: true });
+    if (tabs.length === 0) createTab();
   }
 
   function cycleTab(direction) {
@@ -127,7 +230,7 @@
 
     webview.addEventListener('page-title-updated', (event) => {
       tab.title = truncateTitle(event.title);
-      button.querySelector('.tab-title').textContent = tab.title;
+      updateTabButton(tab);
       if (tab.id === activeId) document.title = tab.title;
     });
 
@@ -166,6 +269,13 @@
         // Older Electron builds may not expose this on webview
       }
     });
+
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setSettingsOpen(false);
+      showTabContextMenu(tab.id, event.clientX, event.clientY);
+    });
   }
 
   function createTab(url = grokUrl, { activate = true } = {}) {
@@ -177,25 +287,38 @@
     button.className = 'tab';
     button.setAttribute('role', 'tab');
     button.dataset.tabId = String(id);
+    button.title = title;
     button.innerHTML = `
+      <span class="tab-pin-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="11" height="11">
+          <path fill="currentColor" d="M9.7 1.8a1 1 0 0 0-1.4 0L6.2 3.9 4.3 3.2a.75.75 0 0 0-.9.3L2.3 5.4a.75.75 0 0 0 .2 1l2.1 1.5-.8 3.2a.75.75 0 0 0 1.1.8l2.8-1.7 2.1 1.5a.75.75 0 0 0 1-.2l1.1-1.8a.75.75 0 0 0-.3-.9l-1.9-.9 2.1-2.1a1 1 0 0 0 0-1.4L9.7 1.8z"/>
+        </svg>
+      </span>
       <span class="tab-title">${title}</span>
       <span class="tab-close" title="Close tab" aria-label="Close tab">×</span>
     `;
 
     button.addEventListener('click', (event) => {
       const target = event.target;
-      if (target instanceof HTMLElement && target.classList.contains('tab-close')) {
+      if (target instanceof HTMLElement && target.closest('.tab-close')) {
         event.stopPropagation();
-        closeTab(id);
+        closeTab(id, { force: true });
         return;
       }
       setActive(id);
     });
 
+    button.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      togglePinTab(id);
+    });
+
     button.addEventListener('auxclick', (event) => {
       if (event.button === 1) {
         event.preventDefault();
-        closeTab(id);
+        const tab = tabs.find((t) => t.id === id);
+        if (tab?.pinned) return;
+        closeTab(id, { force: true });
       }
     });
 
@@ -205,9 +328,16 @@
     webview.setAttribute('allowpopups', '');
     webview.setAttribute('webpreferences', 'contextIsolation=yes, nativeWindowOpen=yes');
 
-    const tab = { id, title, url, webview, button };
-    tabs.push(tab);
-    tabsEl.appendChild(button);
+    const tab = { id, title, url, pinned: false, webview, button };
+    const insertAt = tabs.findIndex((t) => !t.pinned);
+    if (insertAt === -1) {
+      tabs.push(tab);
+      tabsEl.appendChild(button);
+    } else {
+      const beforeBtn = tabs[insertAt].button;
+      tabs.splice(insertAt, 0, tab);
+      tabsEl.insertBefore(button, beforeBtn);
+    }
     viewsEl.appendChild(webview);
     attachWebviewEvents(tab);
 
@@ -234,6 +364,11 @@
     const ctrl = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
 
+    if (key === 'escape') {
+      hideTabContextMenu();
+      return;
+    }
+
     if (ctrl && event.shiftKey && key === 'p') {
       event.preventDefault();
       toggleAlwaysOnTop();
@@ -250,7 +385,11 @@
 
     if (key === 'w') {
       event.preventDefault();
-      if (activeId != null) closeTab(activeId);
+      if (activeId != null) {
+        const active = getActiveTab();
+        if (active?.pinned) return;
+        closeTab(activeId, { force: true });
+      }
       return;
     }
 
@@ -275,6 +414,35 @@
     }
   }
 
+  function onContextAction(action) {
+    const id = contextTabId;
+    hideTabContextMenu();
+    if (id == null) return;
+
+    switch (action) {
+      case 'pin':
+        togglePinTab(id);
+        break;
+      case 'close':
+        closeTab(id, { force: true });
+        break;
+      case 'close-others':
+        closeOtherTabs(id);
+        break;
+      case 'close-left':
+        closeTabsToLeft(id);
+        break;
+      case 'close-right':
+        closeTabsToRight(id);
+        break;
+      case 'close-all':
+        closeAllTabs();
+        break;
+      default:
+        break;
+    }
+  }
+
   async function init() {
     try {
       const config = await window.grokDesktop.getConfig();
@@ -293,14 +461,27 @@
 
     settingsBtn.addEventListener('click', (event) => {
       event.stopPropagation();
+      hideTabContextMenu();
       setSettingsOpen(settingsMenu.hidden);
+    });
+
+    tabContextMenu.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-action]');
+      if (!(btn instanceof HTMLElement)) return;
+      if (btn.disabled) return;
+      onContextAction(btn.dataset.action);
     });
 
     document.addEventListener('click', (event) => {
       if (!settingsMenu.hidden && !settingsMenu.contains(event.target) && event.target !== settingsBtn) {
         setSettingsOpen(false);
       }
+      if (!tabContextMenu.hidden && !tabContextMenu.contains(event.target)) {
+        hideTabContextMenu();
+      }
     });
+
+    window.addEventListener('blur', hideTabContextMenu);
 
     alwaysOnTopInput.addEventListener('change', async () => {
       const enabled = await window.grokDesktop.setAlwaysOnTop(alwaysOnTopInput.checked);

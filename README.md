@@ -17,6 +17,8 @@ Unofficial Electron wrapper for [Grok](https://grok.com) on **Linux** and **Wind
   - `Ctrl+1`…`Ctrl+9` — jump to tab
   - `Ctrl+R` — reload active tab
   - `Ctrl+Shift+P` — toggle always on top
+- Right-click a tab for Pin / Close / Close others / Close left / Close right / Close all
+- Pinned tabs shrink to a compact letter chip (double-click also pins/unpins)
 - External links open in your system browser
 - Single-instance (reopening focuses the existing window)
 
