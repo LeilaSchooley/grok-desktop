@@ -65,6 +65,7 @@ function getPublicSettings() {
     closeToTray: settings.closeToTray,
     grokUrl: GROK_URL,
     partition: PARTITION,
+    guestPreload: path.join(__dirname, 'guest-preload.js'),
     needsRestartForHw: false,
   };
 }
@@ -93,7 +94,11 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^https?:\/\/([^/]*\.)?(grok\.com|x\.ai)(\/|$)/i.test(url)) {
+      mainWindow.webContents.send('open-in-tab', url);
+    } else {
+      shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 
@@ -101,6 +106,18 @@ function createWindow() {
     if (!isQuitting && settings.closeToTray && tray) {
       event.preventDefault();
       mainWindow.hide();
+    }
+  });
+
+  mainWindow.on('focus', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-focused');
+    }
+  });
+
+  mainWindow.on('show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window-focused');
     }
   });
 
@@ -205,6 +222,19 @@ function restartApp() {
 
 app.whenReady().then(() => {
   session.fromPartition(PARTITION);
+
+  // Force every Grok webview guest to open links/tabs inside our chrome
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() !== 'webview') return;
+
+    contents.setWindowOpenHandler(({ url }) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('open-in-tab', url);
+      }
+      return { action: 'deny' };
+    });
+  });
+
   createWindow();
   createTray();
 
