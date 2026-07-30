@@ -20,6 +20,7 @@
   let nextId = 1;
   let grokUrl = 'https://grok.com';
   let partition = 'persist:grok';
+  let guestPreload = '';
   let toastTimer = null;
   let contextTabId = null;
 
@@ -148,6 +149,7 @@
     }
     const active = getActiveTab();
     if (active) document.title = active.title || 'Grok';
+    scheduleFocusComposer();
   }
 
   function closeTab(id, { force = false } = {}) {
@@ -216,13 +218,34 @@
   }
 
   function isGrokUrl(url) {
-    return /^https?:\/\/([^/]*\.)?(grok\.com|x\.ai)(\/|$)/i.test(url) || url.startsWith(grokUrl);
+    if (!url) return false;
+    try {
+      const parsed = new URL(url, grokUrl);
+      if (!/^https?:$/i.test(parsed.protocol)) return false;
+      const host = parsed.hostname.toLowerCase();
+      return (
+        host === 'grok.com' ||
+        host.endsWith('.grok.com') ||
+        host === 'x.ai' ||
+        host.endsWith('.x.ai') ||
+        url.startsWith(grokUrl)
+      );
+    } catch {
+      return false;
+    }
   }
 
-  function handleOpenUrl(url) {
+  function handleOpenUrl(url, { activate = true } = {}) {
     if (!url) return;
-    if (isGrokUrl(url)) createTab(url);
-    else window.grokDesktop.openExternal(url);
+    let absolute = url;
+    try {
+      absolute = new URL(url, grokUrl).href;
+    } catch {
+      return;
+    }
+
+    if (isGrokUrl(absolute)) createTab(absolute, { activate });
+    else window.grokDesktop.openExternal(absolute);
   }
 
   function attachWebviewEvents(tab) {
@@ -259,10 +282,21 @@
       handleOpenUrl(event.url);
     });
 
+    webview.addEventListener('ipc-message', (event) => {
+      if (event.channel === 'open-in-tab' && event.args?.[0]) {
+        handleOpenUrl(event.args[0]);
+      }
+    });
+
     webview.addEventListener('dom-ready', () => {
       try {
-        webview.setWindowOpenHandler(({ url }) => {
-          handleOpenUrl(url);
+        webview.setWindowOpenHandler(({ url, disposition }) => {
+          // foreground-tab / background-tab / new-window / default → our top tabs
+          if (disposition === 'background-tab') {
+            handleOpenUrl(url, { activate: false });
+          } else {
+            handleOpenUrl(url, { activate: true });
+          }
           return { action: 'deny' };
         });
       } catch {
@@ -326,8 +360,13 @@
     webview.src = url;
     webview.partition = partition;
     webview.setAttribute('allowpopups', '');
-    webview.setAttribute('webpreferences', 'contextIsolation=yes, nativeWindowOpen=yes');
-
+    webview.setAttribute(
+      'webpreferences',
+      'contextIsolation=yes, nativeWindowOpen=yes, nodeIntegration=no, sandbox=no'
+    );
+    if (guestPreload) {
+      webview.setAttribute('preload', guestPreload);
+    }
     const tab = { id, title, url, pinned: false, webview, button };
     const insertAt = tabs.findIndex((t) => !t.pinned);
     if (insertAt === -1) {
@@ -352,6 +391,80 @@
   function reloadActive() {
     const active = getActiveTab();
     if (active) active.webview.reload();
+  }
+
+  function focusChatComposer() {
+    const active = getActiveTab();
+    if (!active?.webview) return;
+
+    // Skip if our chrome currently has focus (tab bar / settings)
+    const ae = document.activeElement;
+    if (ae && (ae === document.body ? false : chromeContains(ae))) return;
+
+    const script = `(() => {
+      const selectors = [
+        '.tiptap.ProseMirror[contenteditable="true"]',
+        '.ProseMirror[contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        'div[role="textbox"][contenteditable="true"]',
+        'textarea[aria-label*="Ask" i]',
+        'textarea[placeholder*="Ask" i]',
+        'textarea[placeholder*="Grok" i]',
+        'textarea[data-testid*="input"]',
+        '[contenteditable="true"]',
+        'textarea',
+      ];
+
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 20 && rect.height > 12;
+      };
+
+      let target = null;
+      for (const sel of selectors) {
+        const nodes = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+        if (!nodes.length) continue;
+        // Prefer the bottom-most composer (chat box lives near bottom)
+        target = nodes.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+        break;
+      }
+      if (!target) return false;
+
+      const active = document.activeElement;
+      if (active === target || (active && target.contains(active))) return true;
+
+      target.focus({ preventScroll: true });
+      try {
+        if (typeof target.click === 'function') target.click();
+      } catch {}
+      return true;
+    })()`;
+
+    try {
+      active.webview.executeJavaScript(script, true).catch(() => {});
+    } catch {
+      // webview may not be ready yet
+    }
+  }
+
+  function chromeContains(el) {
+    const chrome = document.getElementById('chrome');
+    const menu = document.getElementById('tab-context-menu');
+    const settings = document.getElementById('settings-menu');
+    return Boolean(
+      (chrome && chrome.contains(el)) ||
+        (menu && menu.contains(el)) ||
+        (settings && settings.contains(el))
+    );
+  }
+
+  function scheduleFocusComposer() {
+    // Slight delay so window focus settles before we steal into the webview
+    setTimeout(focusChatComposer, 60);
+    setTimeout(focusChatComposer, 220);
   }
 
   async function toggleAlwaysOnTop() {
@@ -448,6 +561,7 @@
       const config = await window.grokDesktop.getConfig();
       grokUrl = config.grokUrl || grokUrl;
       partition = config.partition || partition;
+      guestPreload = config.guestPreload || '';
       syncSettingsUi(config);
     } catch {
       // Fall back to defaults
@@ -508,7 +622,13 @@
 
     window.addEventListener('keydown', onKeyDown);
     window.grokDesktop.onSettingsUpdated((settings) => syncSettingsUi(settings));
-    window.grokDesktop.onFocusApp(() => {});
+    window.grokDesktop.onFocusApp(() => scheduleFocusComposer());
+    window.grokDesktop.onWindowFocused(() => scheduleFocusComposer());
+    window.grokDesktop.onOpenInTab((url) => handleOpenUrl(url));
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') scheduleFocusComposer();
+    });
 
     createTab(grokUrl);
   }
