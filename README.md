@@ -10,14 +10,18 @@ Unofficial Electron wrapper for [Grok](https://grok.com) on **Linux** and **Wind
 - Always on top (toolbar pin, settings, tray, or `Ctrl+Shift+P`)
 - Close to tray (optional)
 - Hardware acceleration toggle (persisted; restart to apply — helps with freezing)
-- Keyboard shortcuts:
+- Keyboard shortcuts (work even while typing in Grok):
   - `Ctrl+T` — new tab
+  - `Ctrl+Shift+T` — reopen closed tab
   - `Ctrl+W` — close tab
   - `Ctrl+Tab` / `Ctrl+Shift+Tab` — cycle tabs
   - `Ctrl+1`…`Ctrl+9` — jump to tab
   - `Ctrl+R` — reload active tab
   - `Ctrl+Shift+P` — toggle always on top
-- Right-click a tab for Pin / Close / Close others / Close left / Close right / Close all
+  - `Ctrl+=` / `Ctrl+-` / `Ctrl+0` — zoom
+- Tabs restore after quit (order, pins, active chat, window size)
+- Middle-click a chat to open it in a background tab; opening the same chat focuses the existing tab
+- Right-click a tab for Pin / Duplicate / Copy link / Close / Close others / Close left / Close right / Close all
 - Pinned tabs shrink to a compact letter chip (double-click also pins/unpins)
 - External links open in your system browser
 - Single-instance (reopening focuses the existing window)

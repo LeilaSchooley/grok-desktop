@@ -4,6 +4,7 @@ const {
   shell,
   ipcMain,
   session,
+  screen,
   Tray,
   Menu,
   nativeImage,
@@ -66,16 +67,106 @@ function getPublicSettings() {
     grokUrl: GROK_URL,
     partition: PARTITION,
     guestPreload: path.join(__dirname, 'guest-preload.js'),
+    session: settings.session,
     needsRestartForHw: false,
   };
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
+function isGrokUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/i.test(parsed.protocol)) return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === 'grok.com' || host.endsWith('.grok.com') || host === 'x.ai' || host.endsWith('.x.ai');
+  } catch {
+    return false;
+  }
+}
+
+function sendShortcut(name) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('shortcut', name);
+  }
+}
+
+function bindShortcuts(contents) {
+  contents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const ctrl = input.control || input.meta;
+    if (!ctrl || input.alt) return;
+
+    const { code } = input;
+    const map = {
+      KeyT: input.shift ? 'reopen-tab' : 'new-tab',
+      KeyW: 'close-tab',
+      KeyR: 'reload',
+      KeyP: input.shift ? 'always-on-top' : null,
+      Tab: input.shift ? 'prev-tab' : 'next-tab',
+      Equal: 'zoom-in',
+      NumpadAdd: 'zoom-in',
+      Minus: 'zoom-out',
+      NumpadSubtract: 'zoom-out',
+      Digit0: 'zoom-reset',
+      Numpad0: 'zoom-reset',
+    };
+
+    let name = map[code] || null;
+    if (!name && /^Digit[1-9]$/.test(code)) name = `tab-${code.slice(-1)}`;
+    if (!name) return;
+    if (input.isAutoRepeat && (name === 'new-tab' || name === 'close-tab' || name === 'reopen-tab')) {
+      return;
+    }
+
+    event.preventDefault();
+    sendShortcut(name);
+  });
+}
+
+function windowOptionsFromSettings() {
+  const opts = {
     width: 1280,
     height: 860,
     minWidth: 800,
     minHeight: 560,
+  };
+  const saved = settings.windowBounds;
+  if (!saved || !Number.isFinite(saved.width) || !Number.isFinite(saved.height)) return opts;
+
+  const display = screen.getDisplayMatching({
+    x: Number.isFinite(saved.x) ? saved.x : 0,
+    y: Number.isFinite(saved.y) ? saved.y : 0,
+    width: saved.width,
+    height: saved.height,
+  });
+  const area = display.workArea;
+  opts.width = Math.min(Math.max(saved.width, 800), area.width);
+  opts.height = Math.min(Math.max(saved.height, 560), area.height);
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    opts.x = Math.min(Math.max(saved.x, area.x), area.x + area.width - 120);
+    opts.y = Math.min(Math.max(saved.y, area.y), area.y + area.height - 80);
+  }
+  return opts;
+}
+
+let boundsTimer = null;
+function persistWindowBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const isMaximized = mainWindow.isMaximized();
+  const bounds = isMaximized ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+  settings = writeSettings({
+    windowBounds: { ...bounds, isMaximized },
+  });
+}
+
+function schedulePersistBounds() {
+  clearTimeout(boundsTimer);
+  boundsTimer = setTimeout(persistWindowBounds, 400);
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    ...windowOptionsFromSettings(),
     backgroundColor: '#0a0a0a',
     title: 'Grok',
     icon: ICON_PATH,
@@ -91,6 +182,10 @@ function createWindow() {
     },
   });
 
+  if (settings.windowBounds?.isMaximized) {
+    mainWindow.maximize();
+  }
+
   mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -103,11 +198,15 @@ function createWindow() {
   });
 
   mainWindow.on('close', (event) => {
+    persistWindowBounds();
     if (!isQuitting && settings.closeToTray && tray) {
       event.preventDefault();
       mainWindow.hide();
     }
   });
+
+  mainWindow.on('resize', schedulePersistBounds);
+  mainWindow.on('move', schedulePersistBounds);
 
   mainWindow.on('focus', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -225,6 +324,8 @@ app.whenReady().then(() => {
 
   // Force every Grok webview guest to open links/tabs inside our chrome
   app.on('web-contents-created', (_event, contents) => {
+    bindShortcuts(contents);
+
     if (contents.getType() !== 'webview') return;
 
     contents.setWindowOpenHandler(({ url }) => {
@@ -245,6 +346,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  persistWindowBounds();
 });
 
 app.on('window-all-closed', () => {
@@ -266,6 +368,27 @@ ipcMain.handle('set-close-to-tray', (_event, enabled) => {
   settings = writeSettings({ closeToTray: Boolean(enabled) });
   rebuildTrayMenu();
   return settings.closeToTray;
+});
+
+ipcMain.on('save-session', (_event, sessionState) => {
+  const tabs = Array.isArray(sessionState?.tabs)
+    ? sessionState.tabs
+        .filter((tab) => tab && isGrokUrl(tab.url))
+        .slice(0, 24)
+        .map((tab) => ({
+          url: tab.url,
+          pinned: Boolean(tab.pinned),
+          title: typeof tab.title === 'string' ? tab.title.slice(0, 80) : 'Grok',
+        }))
+    : [];
+  const zoom = Number(sessionState?.zoom);
+  settings = writeSettings({
+    session: {
+      tabs,
+      activeIndex: Math.max(0, Number(sessionState?.activeIndex) || 0),
+      zoom: Number.isFinite(zoom) ? Math.min(1.5, Math.max(0.8, zoom)) : 1,
+    },
+  });
 });
 
 ipcMain.handle('restart-app', () => {

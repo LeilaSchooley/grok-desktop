@@ -9,21 +9,27 @@ function resolveHref(href) {
   }
 }
 
-function openInTab(href) {
+function openInTab(href, activate = true) {
   const url = resolveHref(href);
   if (!url) return;
-  ipcRenderer.sendToHost('open-in-tab', url);
+  ipcRenderer.sendToHost('open-in-tab', { url, activate });
 }
+
+function linkFromEvent(event) {
+  return event.target instanceof Element ? event.target.closest('a[href]') : null;
+}
+
+let ignoreNextAuxClick = false;
 
 document.addEventListener(
   'click',
   (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.button !== 0) return;
-    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    const anchor = linkFromEvent(event);
     if (!anchor) return;
     event.preventDefault();
     event.stopPropagation();
-    openInTab(anchor.getAttribute('href'));
+    openInTab(anchor.getAttribute('href'), true);
   },
   true
 );
@@ -32,11 +38,29 @@ document.addEventListener(
   'auxclick',
   (event) => {
     if (event.button !== 1) return;
-    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    const anchor = linkFromEvent(event);
     if (!anchor) return;
     event.preventDefault();
     event.stopPropagation();
-    openInTab(anchor.getAttribute('href'));
+    if (ignoreNextAuxClick) {
+      ignoreNextAuxClick = false;
+      return;
+    }
+    openInTab(anchor.getAttribute('href'), false);
+  },
+  true
+);
+
+document.addEventListener(
+  'mousedown',
+  (event) => {
+    if (event.button !== 1) return;
+    const anchor = linkFromEvent(event);
+    if (!anchor) return;
+    event.preventDefault();
+    event.stopPropagation();
+    ignoreNextAuxClick = true;
+    openInTab(anchor.getAttribute('href'), false);
   },
   true
 );
@@ -487,11 +511,15 @@ function enhanceNativeHeaders(list) {
   }
 }
 
+function isGrokHost() {
+  return (
+    /(^|\.)grok\.com$/i.test(location.hostname) || /(^|\.)x\.ai$/i.test(location.hostname)
+  );
+}
+
 async function enhanceRanges() {
   if (applying) return;
-  if (!/(^|\.)grok\.com$/i.test(location.hostname) && !/(^|\.)x\.ai$/i.test(location.hostname)) {
-    return;
-  }
+  if (!isGrokHost()) return;
 
   ensureStyles();
   const list = findHistoryList();
@@ -515,12 +543,363 @@ async function enhanceRanges() {
   }
 }
 
+// --- Follow-up suggestions: "All n" in the current chat ----------------------
+
+const USE_ALL_ATTR = 'data-grok-desktop-use-all';
+const FOLLOWUP_STYLE_ID = 'grok-desktop-followup-style';
+const FOLLOWUP_ICON_SEL =
+  'svg.lucide-corner-down-right, svg[class*="corner-down-right"]';
+const CHROME_LABEL =
+  /^(think harder|think hard|think|deepsearch|deep search|quick response|quick answer|close|copy|share|retry|edit|regenerate|stop|send|voice|imagine|attach|search|new chat)$/i;
+const SEND_PATH = /M6 11L12 5|M12 5V19|m5 12 7-7 7 7/i;
+
+let applyingFollowups = false;
+let sendingFollowups = false;
+
+function ensureFollowupStyles() {
+  if (document.getElementById(FOLLOWUP_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = FOLLOWUP_STYLE_ID;
+  style.textContent = `
+    [${USE_ALL_ATTR}] {
+      appearance: none;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      margin: 1px 0 2px;
+      padding: 1px 0 1px 22px;
+      font: inherit;
+      font-size: 11px;
+      line-height: 1.3;
+      letter-spacing: 0.01em;
+      color: currentColor;
+      opacity: 0.42;
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      align-self: flex-start;
+      width: auto;
+      max-width: 100%;
+    }
+    [${USE_ALL_ATTR}]:hover,
+    [${USE_ALL_ATTR}]:focus-visible {
+      opacity: 0.78;
+      outline: none;
+    }
+  `;
+  document.documentElement.appendChild(style);
+}
+
+function isVisibleEl(el) {
+  if (!(el instanceof Element)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    return false;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width > 8 && rect.height > 8;
+}
+
+function isIgnoredFollowupRegion(el) {
+  if (el.closest(`.query-bar, nav, aside, [data-sidebar], [${USE_ALL_ATTR}]`)) return true;
+  const typeahead = el.closest('ul');
+  return Boolean(typeahead && typeahead.querySelector('.typeahead-mask'));
+}
+
+function isSuggestionButton(btn) {
+  if (!(btn instanceof HTMLElement)) return false;
+  if (btn.hasAttribute(USE_ALL_ATTR)) return false;
+  const aria = (btn.getAttribute('aria-label') || '').trim();
+  if (/^close$/i.test(aria)) return false;
+  const text = normalizeLabel(btn.textContent);
+  if (!text || text.length < 6 || text.length > 280) return false;
+  if (CHROME_LABEL.test(text)) return false;
+  return true;
+}
+
+function suggestionButtonsIn(container) {
+  const direct = [...container.querySelectorAll(':scope > button, :scope > [role="button"]')].filter(
+    isSuggestionButton
+  );
+  if (direct.length >= 2) return direct;
+  return [...container.querySelectorAll('button, [role="button"]')].filter(
+    (btn) => btn.querySelector(FOLLOWUP_ICON_SEL) && isSuggestionButton(btn)
+  );
+}
+
+function isFollowupContainer(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  const cls = typeof el.className === 'string' ? el.className : '';
+  return (
+    cls.includes('flex-col') &&
+    cls.includes('gap-1') &&
+    cls.includes('mt-2') &&
+    cls.includes('items-start')
+  );
+}
+
+function findFollowupClusters() {
+  const seen = new Set();
+  const clusters = [];
+
+  const consider = (container) => {
+    if (!container || seen.has(container)) return;
+    if (isIgnoredFollowupRegion(container)) return;
+    if (!isVisibleEl(container)) return;
+    const buttons = suggestionButtonsIn(container);
+    if (buttons.length < 2) return;
+    seen.add(container);
+    clusters.push({ container, buttons });
+  };
+
+  for (const icon of document.querySelectorAll(FOLLOWUP_ICON_SEL)) {
+    const btn = icon.closest('button, [role="button"]');
+    if (!btn) continue;
+    consider(btn.closest('div.flex.flex-col.gap-1') || btn.parentElement);
+  }
+
+  for (const el of document.querySelectorAll('div.flex.flex-col.gap-1')) {
+    if (isFollowupContainer(el)) consider(el);
+  }
+
+  return clusters;
+}
+
+function buildCombinedFollowup(texts) {
+  const lines = texts.map((t, i) => `${i + 1}. ${t}`);
+  return `Please do all of the following follow-ups:\n\n${lines.join('\n')}`;
+}
+
+function findComposer() {
+  const selectors = [
+    '.query-bar .tiptap.ProseMirror[contenteditable="true"]',
+    '.query-bar .ProseMirror[contenteditable="true"]',
+    '.query-bar [contenteditable="true"]',
+    '.tiptap.ProseMirror[contenteditable="true"]',
+    '.ProseMirror[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    'div[role="textbox"][contenteditable="true"]',
+    'textarea[aria-label*="Ask" i]',
+    'textarea[placeholder*="Ask" i]',
+    'textarea[placeholder*="Grok" i]',
+  ];
+  for (const sel of selectors) {
+    const nodes = [...document.querySelectorAll(sel)].filter(isVisibleEl);
+    if (!nodes.length) continue;
+    return nodes.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+  }
+  return null;
+}
+
+function selectElementContents(el) {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function fillComposer(el, text) {
+  el.focus({ preventScroll: true });
+  try {
+    el.click();
+  } catch {
+    // ignore
+  }
+
+  if (el.isContentEditable) {
+    selectElementContents(el);
+    if (document.execCommand('insertText', false, text)) {
+      const got = normalizeLabel(el.innerText || '');
+      if (got.includes(normalizeLabel(text).slice(0, 24))) return true;
+    }
+    selectElementContents(el);
+    document.execCommand('delete');
+    if (document.execCommand('insertText', false, text)) return true;
+    el.textContent = text;
+    el.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: text,
+      })
+    );
+    return true;
+  }
+
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (setter) setter.call(el, text);
+  else el.value = text;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function findSendButton(composer) {
+  const roots = [
+    composer.closest('.query-bar'),
+    composer.closest('form'),
+    composer.parentElement,
+  ].filter(Boolean);
+
+  const fromRoot = (root) => {
+    const labeled = [...root.querySelectorAll('button')].find((btn) => {
+      const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+      return label === 'send' || label === 'submit';
+    });
+    if (labeled) return labeled;
+    const byTestId = root.querySelector('button[data-testid="send-button"]');
+    if (byTestId) return byTestId;
+    const byType = root.querySelector('button[type="submit"]');
+    if (byType) return byType;
+    return [...root.querySelectorAll('button')].find((btn) => {
+      if (btn.disabled) return false;
+      if (btn.querySelector('svg.lucide-arrow-up, svg[class*="arrow-up"]')) return true;
+      return [...btn.querySelectorAll('svg path')].some((p) => SEND_PATH.test(p.getAttribute('d') || ''));
+    });
+  };
+
+  for (const root of roots) {
+    const btn = fromRoot(root);
+    if (btn && isVisibleEl(btn)) return btn;
+  }
+  return (
+    document.querySelector('button[aria-label="Send"]') ||
+    document.querySelector('button[data-testid="send-button"]')
+  );
+}
+
+function sendButtonReady(btn) {
+  if (!btn) return false;
+  if (btn.disabled) return false;
+  if (btn.getAttribute('aria-disabled') === 'true') return false;
+  if (btn.getAttribute('data-disabled') === 'true') return false;
+  return true;
+}
+
+function clickSendSoon(composer) {
+  let sent = false;
+  const tryClick = () => {
+    if (sent) return;
+    const btn = findSendButton(composer);
+    if (!sendButtonReady(btn)) return;
+    sent = true;
+    btn.click();
+  };
+  tryClick();
+  if (!sent) {
+    setTimeout(tryClick, 80);
+    setTimeout(tryClick, 220);
+  }
+}
+
+function sendAllSuggestions(container) {
+  if (sendingFollowups) return;
+  const texts = suggestionButtonsIn(container)
+    .map((btn) => normalizeLabel(btn.textContent))
+    .filter(Boolean);
+  if (texts.length < 2) return;
+
+  const composer = findComposer();
+  if (!composer) {
+    console.warn('[grok-desktop] composer not found for follow-ups');
+    return;
+  }
+
+  sendingFollowups = true;
+  fillComposer(composer, buildCombinedFollowup(texts));
+  clickSendSoon(composer);
+  setTimeout(() => {
+    sendingFollowups = false;
+  }, 1600);
+}
+
+function useAllLabel(count) {
+  return `All ${count}`;
+}
+
+function bindUseAllButton(btn) {
+  if (btn.dataset.grokDesktopBound === '1') return;
+  btn.dataset.grokDesktopBound = '1';
+  const run = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+    const container = btn.previousElementSibling;
+    if (container) sendAllSuggestions(container);
+  };
+  btn.addEventListener('click', run, true);
+  btn.addEventListener('auxclick', run, true);
+  btn.addEventListener(
+    'mousedown',
+    (event) => {
+      if (event.button === 1 || event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    true
+  );
+}
+
+function createUseAllButton(count) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.setAttribute(USE_ALL_ATTR, '1');
+  btn.textContent = useAllLabel(count);
+  btn.title = 'Send all suggestions in this chat';
+  btn.setAttribute('aria-label', `Send all ${count} suggestions in this chat`);
+  bindUseAllButton(btn);
+  return btn;
+}
+
+function pruneOrphanUseAllButtons(liveContainers) {
+  for (const btn of document.querySelectorAll(`[${USE_ALL_ATTR}]`)) {
+    const prev = btn.previousElementSibling;
+    if (!prev || !liveContainers.has(prev)) btn.remove();
+  }
+}
+
+function enhanceFollowups() {
+  if (applyingFollowups) return;
+  if (!isGrokHost()) return;
+
+  applyingFollowups = true;
+  try {
+    ensureFollowupStyles();
+    const clusters = findFollowupClusters();
+    const live = new Set(clusters.map((c) => c.container));
+    pruneOrphanUseAllButtons(live);
+
+    for (const { container, buttons } of clusters) {
+      const count = buttons.length;
+      const existing = container.nextElementSibling;
+      if (existing && existing.hasAttribute?.(USE_ALL_ATTR)) {
+        existing.textContent = useAllLabel(count);
+        existing.setAttribute('aria-label', `Send all ${count} suggestions in this chat`);
+        bindUseAllButton(existing);
+        continue;
+      }
+      container.insertAdjacentElement('afterend', createUseAllButton(count));
+    }
+  } catch (err) {
+    console.warn('[grok-desktop] follow-up enhance failed', err);
+  } finally {
+    applyingFollowups = false;
+  }
+}
+
 let enhanceTimer = null;
 function scheduleEnhance() {
-  if (applying) return;
   clearTimeout(enhanceTimer);
   enhanceTimer = setTimeout(() => {
     enhanceRanges();
+    enhanceFollowups();
   }, 180);
 }
 

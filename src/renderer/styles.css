@@ -68,9 +68,51 @@ body {
   border-radius: var(--radius);
   background: var(--tab);
   color: var(--muted);
-  cursor: pointer;
+  cursor: grab;
   flex: 0 1 auto;
+  position: relative;
+  touch-action: none;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.tab.loading::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.45;
+  animation: tab-load 0.9s ease-in-out infinite;
+}
+
+.tab.unread:not(.active) {
+  box-shadow: inset 0 2px 0 #cfcfcf;
+}
+
+.tab.bump {
+  animation: tab-bump 0.28s ease;
+}
+
+@keyframes tab-load {
+  0%,
+  100% {
+    transform: scaleX(0.35);
+    opacity: 0.25;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 0.7;
+  }
+}
+
+@keyframes tab-bump {
+  50% {
+    transform: translateY(-1px);
+    border-color: var(--accent);
+  }
 }
 
 .tab:hover {

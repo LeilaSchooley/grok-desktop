@@ -14,8 +14,10 @@
   const loadingOverlay = document.getElementById('loading-overlay');
   const tabContextMenu = document.getElementById('tab-context-menu');
 
-  /** @type {{ id: number, title: string, url: string, pinned: boolean, webview: Electron.WebviewTag, button: HTMLButtonElement }[]} */
+  /** @type {{ id: number, title: string, url: string, pinned: boolean, loading: boolean, unread: boolean, webview: Electron.WebviewTag, button: HTMLButtonElement }[]} */
   const tabs = [];
+  /** @type {{ url: string, pinned: boolean, title: string }[]} */
+  const closedTabs = [];
   let activeId = null;
   let nextId = 1;
   let grokUrl = 'https://grok.com';
@@ -23,6 +25,8 @@
   let guestPreload = '';
   let toastTimer = null;
   let contextTabId = null;
+  let zoomFactor = 1;
+  let saveTimer = null;
 
   const uiState = {
     alwaysOnTop: false,
@@ -125,18 +129,191 @@
     }
   }
 
+  function syncTabOrder() {
+    for (const tab of tabs) {
+      tabsEl.appendChild(tab.button);
+    }
+    scheduleSaveSession();
+  }
+
   function reorderPinnedTabs() {
     const pinned = tabs.filter((t) => t.pinned);
     const unpinned = tabs.filter((t) => !t.pinned);
     tabs.length = 0;
     tabs.push(...pinned, ...unpinned);
-    for (const tab of tabs) {
-      tabsEl.appendChild(tab.button);
+    syncTabOrder();
+  }
+
+  function moveTabToIndex(id, toIndex) {
+    const from = tabs.findIndex((t) => t.id === id);
+    if (from === -1 || toIndex === from || toIndex < 0 || toIndex >= tabs.length) return;
+    const tab = tabs[from];
+    const pinnedCount = tabs.filter((t) => t.pinned).length;
+    const min = tab.pinned ? 0 : pinnedCount;
+    const max = tab.pinned ? pinnedCount - 1 : tabs.length - 1;
+    const clamped = Math.max(min, Math.min(max, toIndex));
+    if (clamped === from) return;
+    tabs.splice(from, 1);
+    tabs.splice(clamped, 0, tab);
+    syncTabOrder();
+  }
+
+  function dropIndexFromPoint(clientX, draggingId) {
+    const dragging = tabs.find((t) => t.id === draggingId);
+    if (!dragging) return -1;
+    const group = tabs.filter((t) => t.pinned === dragging.pinned);
+    let groupIndex = group.length - 1;
+    for (let i = 0; i < group.length; i += 1) {
+      const rect = group[i].button.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) {
+        groupIndex = i;
+        break;
+      }
     }
+    return dragging.pinned ? groupIndex : tabs.filter((t) => t.pinned).length + groupIndex;
+  }
+
+  function attachTabDrag(button, id) {
+    const THRESHOLD = 6;
+    let pointerId = null;
+    let startX = 0;
+    let dragging = false;
+    let didDrag = false;
+
+    button.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof HTMLElement && event.target.closest('.tab-close')) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      dragging = false;
+      didDrag = false;
+      button.setPointerCapture(event.pointerId);
+    });
+
+    button.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== pointerId) return;
+      if (!dragging && Math.abs(event.clientX - startX) < THRESHOLD) return;
+      if (!dragging) {
+        dragging = true;
+        didDrag = true;
+        button.classList.add('dragging');
+        hideTabContextMenu();
+      }
+      moveTabToIndex(id, dropIndexFromPoint(event.clientX, id));
+    });
+
+    const endDrag = (event) => {
+      if (event.pointerId !== pointerId) return;
+      if (dragging) button.classList.remove('dragging');
+      dragging = false;
+      pointerId = null;
+      try {
+        button.releasePointerCapture(event.pointerId);
+      } catch {
+        // already released
+      }
+    };
+
+    button.addEventListener('pointerup', endDrag);
+    button.addEventListener('pointercancel', endDrag);
+
+    button.addEventListener(
+      'click',
+      (event) => {
+        if (!didDrag) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        didDrag = false;
+      },
+      true
+    );
   }
 
   function getActiveTab() {
     return tabs.find((t) => t.id === activeId) || null;
+  }
+
+  function snapshotSession() {
+    return {
+      tabs: tabs.map((t) => ({ url: t.url, pinned: t.pinned, title: t.title })),
+      activeIndex: Math.max(0, tabs.findIndex((t) => t.id === activeId)),
+      zoom: zoomFactor,
+    };
+  }
+
+  function flushSession() {
+    clearTimeout(saveTimer);
+    window.grokDesktop.saveSession(snapshotSession());
+  }
+
+  function scheduleSaveSession() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushSession, 280);
+  }
+
+  function conversationId(url) {
+    try {
+      const match = new URL(url, grokUrl).pathname.match(/\/c\/([0-9a-f-]{36})/i);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function findExistingTab(url) {
+    const id = conversationId(url);
+    if (!id) return null;
+    return tabs.find((t) => conversationId(t.url) === id) || null;
+  }
+
+  function bumpTab(tab) {
+    tab.button.classList.remove('bump');
+    void tab.button.offsetWidth;
+    tab.button.classList.add('bump');
+    tab.button.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }
+
+  function applyZoom(tab) {
+    try {
+      tab.webview.setZoomFactor(zoomFactor);
+    } catch {
+      // webview may not be ready
+    }
+  }
+
+  function setZoom(next) {
+    zoomFactor = Math.round(Math.min(1.5, Math.max(0.8, next)) * 10) / 10;
+    for (const tab of tabs) applyZoom(tab);
+    showToast(`${Math.round(zoomFactor * 100)}%`);
+    scheduleSaveSession();
+  }
+
+  function setTabLoading(tab, loading) {
+    tab.loading = loading;
+    tab.button.classList.toggle('loading', loading);
+    if (tab.id === activeId) setLoading(loading);
+  }
+
+  function insertTab(tab, { insert = 'end', afterId = null } = {}) {
+    if (insert === 'restore') {
+      tabs.push(tab);
+      tabsEl.appendChild(tab.button);
+      return;
+    }
+
+    if (afterId != null) {
+      const idx = tabs.findIndex((t) => t.id === afterId);
+      const pinnedCount = tabs.filter((t) => t.pinned).length;
+      let at = idx === -1 ? tabs.length : idx + 1;
+      if (!tab.pinned && at < pinnedCount) at = pinnedCount;
+      if (tab.pinned && at > pinnedCount) at = pinnedCount;
+      tabs.splice(at, 0, tab);
+    } else if (tab.pinned) {
+      tabs.splice(tabs.filter((t) => t.pinned).length, 0, tab);
+    } else {
+      tabs.push(tab);
+    }
+    syncTabOrder();
   }
 
   function setActive(id) {
@@ -146,10 +323,19 @@
       tab.button.classList.toggle('active', isActive);
       tab.button.setAttribute('aria-selected', String(isActive));
       tab.webview.classList.toggle('active', isActive);
+      if (isActive) {
+        tab.unread = false;
+        tab.button.classList.remove('unread');
+      }
     }
     const active = getActiveTab();
-    if (active) document.title = active.title || 'Grok';
+    if (active) {
+      document.title = active.title || 'Grok';
+      setLoading(Boolean(active.loading));
+      active.button.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    }
     scheduleFocusComposer();
+    scheduleSaveSession();
   }
 
   function closeTab(id, { force = false } = {}) {
@@ -162,9 +348,13 @@
       return;
     }
 
+    closedTabs.push({ url: tab.url, pinned: false, title: tab.title });
+    if (closedTabs.length > 20) closedTabs.shift();
+
     tabs.splice(index, 1);
     tab.button.remove();
     tab.webview.remove();
+    scheduleSaveSession();
 
     if (tabs.length === 0) {
       createTab();
@@ -210,6 +400,32 @@
     if (tabs.length === 0) createTab();
   }
 
+  function reopenClosedTab() {
+    const item = closedTabs.pop();
+    if (!item) return;
+    const tab = createTab(item.url, { activate: true, insert: 'end' });
+    if (item.title) {
+      tab.title = item.title;
+      updateTabButton(tab);
+    }
+  }
+
+  function duplicateTab(id) {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab) return;
+    createTab(tab.url, { activate: true, afterId: id });
+  }
+
+  async function copyTabLink(id) {
+    const tab = tabs.find((t) => t.id === id);
+    if (!tab?.url) return;
+    try {
+      await navigator.clipboard.writeText(tab.url);
+      showToast('Link copied');
+    } catch {
+      showToast('Could not copy link');
+    }
+  }
   function cycleTab(direction) {
     if (tabs.length < 2) return;
     const index = tabs.findIndex((t) => t.id === activeId);
@@ -244,8 +460,28 @@
       return;
     }
 
-    if (isGrokUrl(absolute)) createTab(absolute, { activate });
-    else window.grokDesktop.openExternal(absolute);
+    if (!isGrokUrl(absolute)) {
+      window.grokDesktop.openExternal(absolute);
+      return;
+    }
+
+    const existing = findExistingTab(absolute);
+    if (existing) {
+      bumpTab(existing);
+      if (activate) setActive(existing.id);
+      return;
+    }
+
+    createTab(absolute, { activate, afterId: activeId });
+  }
+
+  function parseOpenInTabPayload(payload) {
+    if (!payload) return null;
+    if (typeof payload === 'string') return { url: payload, activate: true };
+    if (typeof payload === 'object' && payload.url) {
+      return { url: payload.url, activate: payload.activate !== false };
+    }
+    return null;
   }
 
   function attachWebviewEvents(tab) {
@@ -255,27 +491,26 @@
       tab.title = truncateTitle(event.title);
       updateTabButton(tab);
       if (tab.id === activeId) document.title = tab.title;
+      else {
+        tab.unread = true;
+        tab.button.classList.add('unread');
+      }
+      scheduleSaveSession();
     });
 
     webview.addEventListener('did-navigate', (event) => {
       tab.url = event.url;
+      scheduleSaveSession();
     });
 
     webview.addEventListener('did-navigate-in-page', (event) => {
       tab.url = event.url;
+      scheduleSaveSession();
     });
 
-    webview.addEventListener('did-stop-loading', () => {
-      if (tab.id === activeId) setLoading(false);
-    });
-
-    webview.addEventListener('did-fail-load', () => {
-      if (tab.id === activeId) setLoading(false);
-    });
-
-    webview.addEventListener('did-start-loading', () => {
-      if (tab.id === activeId) setLoading(true);
-    });
+    webview.addEventListener('did-stop-loading', () => setTabLoading(tab, false));
+    webview.addEventListener('did-fail-load', () => setTabLoading(tab, false));
+    webview.addEventListener('did-start-loading', () => setTabLoading(tab, true));
 
     webview.addEventListener('new-window', (event) => {
       event.preventDefault();
@@ -283,20 +518,16 @@
     });
 
     webview.addEventListener('ipc-message', (event) => {
-      if (event.channel === 'open-in-tab' && event.args?.[0]) {
-        handleOpenUrl(event.args[0]);
-      }
+      if (event.channel !== 'open-in-tab') return;
+      const parsed = parseOpenInTabPayload(event.args?.[0]);
+      if (parsed) handleOpenUrl(parsed.url, { activate: parsed.activate });
     });
 
     webview.addEventListener('dom-ready', () => {
+      applyZoom(tab);
       try {
         webview.setWindowOpenHandler(({ url, disposition }) => {
-          // foreground-tab / background-tab / new-window / default → our top tabs
-          if (disposition === 'background-tab') {
-            handleOpenUrl(url, { activate: false });
-          } else {
-            handleOpenUrl(url, { activate: true });
-          }
+          handleOpenUrl(url, { activate: disposition !== 'background-tab' });
           return { action: 'deny' };
         });
       } catch {
@@ -312,9 +543,8 @@
     });
   }
 
-  function createTab(url = grokUrl, { activate = true } = {}) {
+  function createTab(url = grokUrl, { activate = true, pinned = false, title = 'Grok', insert = 'end', afterId = null } = {}) {
     const id = nextId++;
-    const title = 'Grok';
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -328,7 +558,7 @@
           <path fill="currentColor" d="M9.7 1.8a1 1 0 0 0-1.4 0L6.2 3.9 4.3 3.2a.75.75 0 0 0-.9.3L2.3 5.4a.75.75 0 0 0 .2 1l2.1 1.5-.8 3.2a.75.75 0 0 0 1.1.8l2.8-1.7 2.1 1.5a.75.75 0 0 0 1-.2l1.1-1.8a.75.75 0 0 0-.3-.9l-1.9-.9 2.1-2.1a1 1 0 0 0 0-1.4L9.7 1.8z"/>
         </svg>
       </span>
-      <span class="tab-title">${title}</span>
+      <span class="tab-title">Grok</span>
       <span class="tab-close" title="Close tab" aria-label="Close tab">×</span>
     `;
 
@@ -356,6 +586,8 @@
       }
     });
 
+    attachTabDrag(button, id);
+
     const webview = document.createElement('webview');
     webview.src = url;
     webview.partition = partition;
@@ -367,24 +599,18 @@
     if (guestPreload) {
       webview.setAttribute('preload', guestPreload);
     }
-    const tab = { id, title, url, pinned: false, webview, button };
-    const insertAt = tabs.findIndex((t) => !t.pinned);
-    if (insertAt === -1) {
-      tabs.push(tab);
-      tabsEl.appendChild(button);
-    } else {
-      const beforeBtn = tabs[insertAt].button;
-      tabs.splice(insertAt, 0, tab);
-      tabsEl.insertBefore(button, beforeBtn);
-    }
+    const tab = { id, title, url, pinned, loading: true, unread: false, webview, button };
+    insertTab(tab, { insert, afterId });
     viewsEl.appendChild(webview);
     attachWebviewEvents(tab);
+    updateTabButton(tab);
+    setTabLoading(tab, true);
 
     if (activate) {
       setActive(id);
-      setLoading(true);
     }
     button.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    scheduleSaveSession();
     return tab;
   }
 
@@ -473,57 +699,53 @@
     syncSettingsUi({ ...uiState, alwaysOnTop: enabled });
   }
 
-  function onKeyDown(event) {
-    const ctrl = event.ctrlKey || event.metaKey;
-    const key = event.key.toLowerCase();
-
-    if (key === 'escape') {
-      hideTabContextMenu();
-      return;
-    }
-
-    if (ctrl && event.shiftKey && key === 'p') {
-      event.preventDefault();
-      toggleAlwaysOnTop();
-      return;
-    }
-
-    if (!ctrl) return;
-
-    if (key === 't') {
-      event.preventDefault();
-      createTab();
-      return;
-    }
-
-    if (key === 'w') {
-      event.preventDefault();
-      if (activeId != null) {
+  function onShortcut(name) {
+    switch (name) {
+      case 'new-tab':
+        createTab();
+        break;
+      case 'reopen-tab':
+        reopenClosedTab();
+        break;
+      case 'close-tab': {
         const active = getActiveTab();
-        if (active?.pinned) return;
-        closeTab(activeId, { force: true });
+        if (active && !active.pinned) closeTab(active.id, { force: true });
+        break;
       }
-      return;
+      case 'reload':
+        reloadActive();
+        break;
+      case 'next-tab':
+        cycleTab(1);
+        break;
+      case 'prev-tab':
+        cycleTab(-1);
+        break;
+      case 'always-on-top':
+        toggleAlwaysOnTop();
+        break;
+      case 'zoom-in':
+        setZoom(zoomFactor + 0.1);
+        break;
+      case 'zoom-out':
+        setZoom(zoomFactor - 0.1);
+        break;
+      case 'zoom-reset':
+        setZoom(1);
+        break;
+      default:
+        if (name.startsWith('tab-')) {
+          const index = Number(name.slice(4)) - 1;
+          if (tabs[index]) setActive(tabs[index].id);
+        }
+        break;
     }
+  }
 
-    if (key === 'r') {
-      event.preventDefault();
-      reloadActive();
-      return;
-    }
-
-    if (key === 'tab') {
-      event.preventDefault();
-      cycleTab(event.shiftKey ? -1 : 1);
-      return;
-    }
-
-    if (event.key >= '1' && event.key <= '9') {
-      const index = Number(event.key) - 1;
-      if (tabs[index]) {
-        event.preventDefault();
-        setActive(tabs[index].id);
-      }
+  function onKeyDown(event) {
+    if (event.key === 'Escape') {
+      hideTabContextMenu();
+      setSettingsOpen(false);
     }
   }
 
@@ -535,6 +757,12 @@
     switch (action) {
       case 'pin':
         togglePinTab(id);
+        break;
+      case 'duplicate':
+        duplicateTab(id);
+        break;
+      case 'copy-link':
+        copyTabLink(id);
         break;
       case 'close':
         closeTab(id, { force: true });
@@ -557,11 +785,15 @@
   }
 
   async function init() {
+    let savedSession = { tabs: [], activeIndex: 0, zoom: 1 };
     try {
       const config = await window.grokDesktop.getConfig();
       grokUrl = config.grokUrl || grokUrl;
       partition = config.partition || partition;
       guestPreload = config.guestPreload || '';
+      savedSession = config.session || savedSession;
+      const zoom = Number(savedSession.zoom);
+      if (Number.isFinite(zoom)) zoomFactor = Math.min(1.5, Math.max(0.8, zoom));
       syncSettingsUi(config);
     } catch {
       // Fall back to defaults
@@ -571,6 +803,20 @@
     reloadBtn.addEventListener('click', reloadActive);
     pinBtn.addEventListener('click', () => {
       toggleAlwaysOnTop();
+    });
+
+    tabsEl.addEventListener(
+      'wheel',
+      (event) => {
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+        event.preventDefault();
+        tabsEl.scrollLeft += event.deltaY;
+      },
+      { passive: false }
+    );
+
+    tabsEl.addEventListener('dblclick', (event) => {
+      if (event.target === tabsEl) createTab();
     });
 
     settingsBtn.addEventListener('click', (event) => {
@@ -625,12 +871,35 @@
     window.grokDesktop.onFocusApp(() => scheduleFocusComposer());
     window.grokDesktop.onWindowFocused(() => scheduleFocusComposer());
     window.grokDesktop.onOpenInTab((url) => handleOpenUrl(url));
+    window.grokDesktop.onShortcut(onShortcut);
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') scheduleFocusComposer();
+      else flushSession();
     });
+    window.addEventListener('pagehide', flushSession);
 
-    createTab(grokUrl);
+    const restored = Array.isArray(savedSession.tabs)
+      ? savedSession.tabs.filter((item) => item && isGrokUrl(item.url))
+      : [];
+    if (restored.length) {
+      for (const item of restored) {
+        const tab = createTab(item.url, {
+          activate: false,
+          pinned: Boolean(item.pinned),
+          title: item.title || 'Grok',
+          insert: 'restore',
+        });
+        if (item.title) {
+          tab.title = truncateTitle(item.title);
+          updateTabButton(tab);
+        }
+      }
+      const idx = Math.min(Math.max(0, Number(savedSession.activeIndex) || 0), tabs.length - 1);
+      setActive(tabs[idx].id);
+    } else {
+      createTab(grokUrl);
+    }
   }
 
   init();

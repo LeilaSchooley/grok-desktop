@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('grokDesktop', {
   setHardwareAcceleration: (enabled) =>
     ipcRenderer.invoke('set-hardware-acceleration', enabled),
   setCloseToTray: (enabled) => ipcRenderer.invoke('set-close-to-tray', enabled),
+  saveSession: (session) => ipcRenderer.send('save-session', session),
   restartApp: () => ipcRenderer.invoke('restart-app'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
   onFocusApp: (callback) => {
@@ -27,5 +28,10 @@ contextBridge.exposeInMainWorld('grokDesktop', {
     const handler = (_event, url) => callback(url);
     ipcRenderer.on('open-in-tab', handler);
     return () => ipcRenderer.removeListener('open-in-tab', handler);
+  },
+  onShortcut: (callback) => {
+    const handler = (_event, name) => callback(name);
+    ipcRenderer.on('shortcut', handler);
+    return () => ipcRenderer.removeListener('shortcut', handler);
   },
 });

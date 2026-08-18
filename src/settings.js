@@ -6,6 +6,12 @@ const DEFAULTS = {
   alwaysOnTop: false,
   hardwareAcceleration: true,
   closeToTray: true,
+  windowBounds: null,
+  session: {
+    tabs: [],
+    activeIndex: 0,
+    zoom: 1,
+  },
 };
 
 function settingsPath() {
@@ -14,15 +20,29 @@ function settingsPath() {
 
 function readSettings() {
   try {
-    const raw = fs.readFileSync(settingsPath(), 'utf8');
-    return { ...DEFAULTS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
+    return {
+      ...DEFAULTS,
+      ...parsed,
+      session: { ...DEFAULTS.session, ...(parsed.session || {}) },
+    };
   } catch {
-    return { ...DEFAULTS };
+    return {
+      ...DEFAULTS,
+      session: { ...DEFAULTS.session },
+    };
   }
 }
 
 function writeSettings(partial) {
-  const next = { ...readSettings(), ...partial };
+  const current = readSettings();
+  const next = {
+    ...current,
+    ...partial,
+    session: partial.session
+      ? { ...DEFAULTS.session, ...current.session, ...partial.session }
+      : current.session,
+  };
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(next, null, 2));
   return next;
